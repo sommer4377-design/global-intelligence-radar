@@ -1,60 +1,146 @@
-"""将 SQLite 状态交给另一独立运行环境，校验失败时保留目标库。"""
+"""Two-run state benchmark, restricted to the designated private repository."""
 import argparse
-from hashlib import sha256
+import base64
+import gzip
+import io
 import json
+import os
 from pathlib import Path
+import re
 import sqlite3
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
+from urllib.error import HTTPError
+from urllib.request import build_opener, HTTPRedirectHandler, Request
+
+from state_transfer import signature, transfer
+
+REPO = "sommer4377-design/global-intelligence-radar-state"
+HOST = "https://api.github.com/repos/" + REPO
+FILE = "/contents/benchmark/sqlite-snapshot-v1.json"
+MAX_BUNDLE = 900 * 1024
+MAX_DB = 16 * 1024 * 1024
+TABLES = ("articles", "revisions", "health", "signals", "findings", "finding_history")
 
 
-def check(db):
-    if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-        raise ValueError("SQLite 快速完整性检查失败")
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
-def signature(path):
-    with path.open("rb") as stream:
-        digest = sha256()
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {"sha256": digest.hexdigest(), "bytes": path.stat().st_size}
-
-
-def transfer(source, destination, mode):
-    if source.resolve() == destination.resolve() or not source.is_file():
-        raise ValueError("输入缺失或与目标路径相同")
-    manifest = (destination if mode == "backup" else source).with_suffix(".manifest.json")
-    if mode == "restore" and signature(source) != json.loads(manifest.read_text(encoding="utf-8")):
-        raise ValueError("状态文件校验失败，现有数据库保留")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=destination.parent, delete=False) as temp:
-        staged = Path(temp.name)
+def api(path, payload=None):
+    token = os.environ.get("RADAR_STATE_TOKEN")
+    if not token:
+        raise SystemExit("RADAR_STATE_TOKEN is missing.")
+    request = Request(HOST + path, data=json.dumps(payload).encode() if payload is not None else None,
+                      method="PUT" if payload is not None else "GET",
+                      headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+                               "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"})
     try:
-        with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as current:
-            with sqlite3.connect(staged) as replacement:
-                current.backup(replacement)
-                check(replacement)
-        if mode == "backup":
-            info = signature(staged)
-            # 校验清单最后发布；任一中断均会安全拒绝不一致的组合。
-            staged.replace(destination)
-            pending = manifest.with_suffix(".tmp")
-            pending.write_text(json.dumps(info), encoding="utf-8")
-            pending.replace(manifest)
-        else:
-            staged.replace(destination)
-        return signature(destination)
-    finally:
-        staged.unlink(missing_ok=True)
+        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+            return json.loads(response.read(2 * MAX_BUNDLE))
+    except HTTPError as error:
+        raise SystemExit(f"GitHub request refused: HTTP {error.code}.") from None
+
+
+def counts(path):
+    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise ValueError("SQLite quick_check failed.")
+        return {table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in TABLES}
+
+
+def pack(path):
+    with TemporaryDirectory() as directory:
+        snapshot = Path(directory) / "snapshot.sqlite3"
+        info = transfer(path, snapshot, "backup")
+        if info["bytes"] > MAX_DB:
+            raise ValueError("SQLite snapshot exceeds size limit.")
+        tables = counts(snapshot)
+        if not tables["articles"]:
+            raise ValueError("SQLite snapshot contains no news.")
+        encoded = base64.b64encode(gzip.compress(snapshot.read_bytes(), mtime=0)).decode("ascii")
+        bundle = json.dumps({"version": 1, "signature": info, "tables": tables, "sqlite": encoded},
+                            separators=(",", ":")).encode()
+        if len(bundle) > MAX_BUNDLE:
+            raise ValueError("Compressed snapshot exceeds upload limit.")
+        return bundle, info, tables
+
+
+def restore(bundle, target):
+    if len(bundle) > MAX_BUNDLE:
+        raise ValueError("Bundle exceeds restore limit.")
+    data = json.loads(bundle)
+    if data["version"] != 1:
+        raise ValueError("Unsupported snapshot format.")
+    with TemporaryDirectory() as directory:
+        snapshot = Path(directory) / "snapshot.sqlite3"
+        with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(data["sqlite"], validate=True))) as stream:
+            buffer = stream.read(MAX_DB + 1)
+        if len(buffer) > MAX_DB:
+            raise ValueError("Snapshot exceeds restore limit.")
+        snapshot.write_bytes(buffer)
+        if signature(snapshot) != data["signature"] or counts(snapshot) != data["tables"]:
+            raise ValueError("Snapshot signature or counts differ.")
+        snapshot.with_suffix(".manifest.json").write_text(json.dumps(data["signature"]))
+        transfer(snapshot, target, "restore")
+    return data["signature"], data["tables"]
+
+
+def verify_retained(before, after):
+    previous, current = counts(before), counts(after)
+    with sqlite3.connect(after.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        db.execute("ATTACH DATABASE ? AS old", (before.resolve().as_uri() + "?mode=ro",))
+        lost = db.execute("SELECT count(*) FROM old.articles WHERE url NOT IN (SELECT url FROM main.articles)").fetchone()[0]
+    if lost:
+        raise ValueError(f"{lost} historical URLs disappeared.")
+    print("Historical URLs retained:", previous["articles"], "new:", current["articles"] - previous["articles"])
+
+
+def reject_corruption(path):
+    bundle, _, _ = pack(path)
+    damaged = json.loads(bundle)
+    damaged["signature"]["sha256"] = "0" * 64
+    with TemporaryDirectory() as directory:
+        destination = Path(directory) / "protected.sqlite3"
+        transfer(path, destination, "backup")
+        initial = signature(destination)
+        try:
+            restore(json.dumps(damaged).encode(), destination)
+        except ValueError:
+            if signature(destination) == initial:
+                print("Invalid digest rejected; existing local database preserved.")
+                return
+    raise ValueError("Corruption was not rejected safely.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("backup", "restore"))
-    parser.add_argument("source", type=Path)
-    parser.add_argument("destination", type=Path)
+    parser.add_argument("operation", choices=("seed", "restore", "verify"))
+    parser.add_argument("database", type=Path)
+    parser.add_argument("--commit")
+    parser.add_argument("--before", type=Path)
     args = parser.parse_args()
-    print(json.dumps(transfer(args.source, args.destination, args.mode)))
+    if args.operation == "verify":
+        if not args.before:
+            parser.error("--before is required for verify")
+        verify_retained(args.before, args.database)
+        reject_corruption(args.before)
+        return
+    details = api("")
+    if details.get("full_name", "").lower() != REPO or details.get("private") is not True or details.get("default_branch") != "main":
+        raise SystemExit("State repository identity, visibility or branch check failed.")
+    if args.operation == "seed":
+        bundle, info, tables = pack(args.database)
+        # Omitting sha makes this a create-only write; an existing file is never overwritten.
+        result = api(FILE, {"message": "Save first Radar SQLite test snapshot", "branch": "main",
+                            "content": base64.b64encode(bundle).decode("ascii")})
+        print("State commit:", result["commit"]["sha"])
+    else:
+        if not args.commit or not re.fullmatch(r"[0-9a-f]{40}", args.commit):
+            parser.error("--commit must contain a complete 40-character commit SHA")
+        result = api(FILE + "?ref=" + args.commit)
+        info, tables = restore(base64.b64decode(result["content"]), args.database)
+    print("SQLite SHA-256:", info["sha256"], "table counts:", json.dumps(tables, sort_keys=True))
 
 
 if __name__ == "__main__":
