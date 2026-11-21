@@ -1,0 +1,90 @@
+# 第一次提交时放到 .github/workflows/offline-benchmark.yml。
+name: Radar offline benchmark
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radar-manual-benchmark
+  cancel-in-progress: false
+
+jobs:
+  cpu:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Prepare and measure free offline models
+        id: offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner: $(uname -s) $(uname -m)"
+          python --version
+          start=$SECONDS
+          if python -m pip install --no-cache-dir -r requirements-offline.txt; then
+            echo "Dependency install seconds: $((SECONDS - start))"
+            start=$SECONDS
+            if python setup_models.py "$RUNNER_TEMP/models"; then
+              echo "Model download and extract seconds: $((SECONDS - start))"
+            else
+              echo "Model setup failed; probe available routes and continue with fallback."
+            fi
+          else
+            echo "Dependency installation failed; continue with original-language fallback."
+          fi
+          if [ -d "$RUNNER_TEMP/models" ]; then
+            echo "Extracted model size: $(du -sh "$RUNNER_TEMP/models" | cut -f1)"
+          fi
+          python - "$RUNNER_TEMP/models" <<'PY'
+          from pathlib import Path
+          import resource, sys, time
+          from automatic import Translator
+
+          started = time.monotonic()
+          translator = Translator(Path(sys.argv[1]))
+          available = {
+              "en": bool(translator.translate("The company launched a new product.", "en")),
+              "pt": bool(translator.translate("A empresa lançou um novo produto.", "pt")),
+          }
+          for language, success in available.items():
+              print(f"Offline translation {language}: {'PASS' if success else 'UNAVAILABLE'}")
+          print(f"Model probe seconds: {time.monotonic() - started:.2f}")
+          print(f"Model probe peak MiB: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f}")
+          if not all(available.values()):
+              print("Offline model benchmark incomplete; report generation will exercise available routes and fallback.")
+          PY
+      - name: Live run, in-job restore and original-language fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot_date="$(TZ=Asia/Shanghai date +%F)"
+          python automatic.py --date "$snapshot_date" --state "$RUNNER_TEMP/radar.sqlite3" --models "$RUNNER_TEMP/models" --output-dir "$RUNNER_TEMP/reports"
+          python state_transfer.py backup "$RUNNER_TEMP/radar.sqlite3" "$RUNNER_TEMP/handoff/snapshot.sqlite3"
+          python state_transfer.py restore "$RUNNER_TEMP/handoff/snapshot.sqlite3" "$RUNNER_TEMP/independent/restored.sqlite3"
+          python automatic.py --date "$snapshot_date" --state "$RUNNER_TEMP/independent/restored.sqlite3" --output-dir "$RUNNER_TEMP/fallback" --reuse
+          python - "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import sqlite3, sys
+          root = Path(sys.argv[1])
+          tables = ("articles", "revisions", "health", "signals", "findings", "finding_history")
+          with sqlite3.connect(root / "radar.sqlite3") as first, sqlite3.connect(root / "independent/restored.sqlite3") as restored:
+              for table in tables:
+                  query = f"SELECT * FROM {table} ORDER BY rowid"
+                  assert first.execute(query).fetchall() == restored.execute(query).fetchall(), table
+              assert first.execute("SELECT count(*) FROM articles").fetchone()[0] > 0
+          assert (root / "reports/index.html").is_file()
+          assert (root / "fallback/index.html").is_file()
+          print("SQLite six-table equality and both local HTML outputs: PASS")
+          print("SQLite test applies to files within this job. Cross-run persistence is a separate benchmark.")
+          PY
