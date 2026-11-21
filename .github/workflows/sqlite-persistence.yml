@@ -1,0 +1,53 @@
+name: Radar SQLite persistence test
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Create a first snapshot or verify an existing one
+        type: choice
+        required: true
+        options:
+          - restore
+          - seed
+      state_commit:
+        description: Commit SHA printed by seed, required in restore mode
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: radar-sqlite-persistence
+  cancel-in-progress: false
+jobs:
+  state:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Restore pinned snapshot from private repository
+        if: inputs.mode == 'restore'
+        env:
+          RADAR_STATE_TOKEN: ${{ secrets.RADAR_STATE_TOKEN }}
+          STATE_COMMIT: ${{ inputs.state_commit }}
+        run: |
+          python state_roundtrip.py restore "$RUNNER_TEMP/before.sqlite3" --commit "$STATE_COMMIT"
+          cp "$RUNNER_TEMP/before.sqlite3" "$RUNNER_TEMP/radar.sqlite3"
+      - name: Collect and render without any model or state credential
+        run: |
+          python automatic.py --date "$(TZ=Asia/Shanghai date +%F)" --state "$RUNNER_TEMP/radar.sqlite3" --output-dir "$RUNNER_TEMP/reports"
+      - name: Save new test snapshot to the private repository
+        if: inputs.mode == 'seed'
+        env:
+          RADAR_STATE_TOKEN: ${{ secrets.RADAR_STATE_TOKEN }}
+        run: python state_roundtrip.py seed "$RUNNER_TEMP/radar.sqlite3"
+      - name: Verify preserved articles and simulate damage locally
+        if: inputs.mode == 'restore'
+        run: python state_roundtrip.py verify "$RUNNER_TEMP/radar.sqlite3" --before "$RUNNER_TEMP/before.sqlite3"
