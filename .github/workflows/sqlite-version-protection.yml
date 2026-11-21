@@ -1,0 +1,22 @@
+name: Radar SQLite version protection test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test conditional writes on a run-specific path
+        env:
+          RADAR_STATE_TOKEN: ${{ secrets.RADAR_STATE_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python validate_snapshot_versions.py
