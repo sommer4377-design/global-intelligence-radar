@@ -1,8 +1,8 @@
 """从自动简报选出最新一期，并用同一内容生成首页。"""
 from datetime import datetime
 from html import escape
-import re
 
+from local_schedule import write_if_changed
 from radar import BEIJING
 
 
@@ -39,8 +39,5 @@ def refresh(directory, now):
     page = page.replace("<section><h2>你可能还不知道", '<section id="hotspots"><h2>你可能还不知道', 1)
     page = page.replace("<section><h2>最近7天", '<section id="catchup"><h2>最近7天', 1)
     page = page.replace("</main>", archive + "</main>", 1)
-    target = directory / "index.html"
-    pending = directory / "index.html.tmp"
-    pending.write_text(page, encoding="utf-8")
-    pending.replace(target)
+    write_if_changed(directory / "index.html", page)
     return latest[1]

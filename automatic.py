@@ -1,6 +1,7 @@
 """使用真实公开来源生成本地早晚报。"""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from decimal import Decimal
@@ -19,6 +20,7 @@ from sources import REGISTRY
 import discovery
 from watch import watch_html
 from homepage import refresh
+from local_schedule import generate_due
 from publish import CATEGORIES, card
 from radar import BEIJING, ROOT
 
@@ -330,7 +332,7 @@ def render_item(group, translator, number):
     return info["title"], html, bool(title), bool(summary)
 
 
-def write_report(slot, data, translator, target, statuses, findings=(), watch=""):
+def write_report(slot, data, translator, target, statuses, findings=(), watch="", generated_at=None):
     start = slot - timedelta(hours=12)
     seven_days = slot - timedelta(days=7)
     recent = [row for row in data if row["score"] and seven_days <= event_time(row) < slot]
@@ -358,10 +360,15 @@ def write_report(slot, data, translator, target, statuses, findings=(), watch=""
                      for name, items in sections.items())
     css = (ROOT / "news.css").read_text()
     health = "".join(f"<li>{escape(line)}</li>" for line in statuses)
+    report_time = generated_at or datetime.now(BEIJING)
+    edition_status = " · 截点前预览" if slot > report_time else ""
+    if generated_at is not None and slot <= report_time:
+        delay = int((report_time - slot).total_seconds() // 60)
+        edition_status = f" · 生成于 {report_time:%Y-%m-%d %H:%M} 北京时间（距截点 {delay} 分钟）"
     target.write_text(f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Global Intelligence Radar 自动简报</title><style>{css}</style>
-<header><h1>Global Intelligence Radar</h1><p>{slot:%Y-%m-%d %H:%M} 北京时间 · 真实来源自动简报{" · 截点前预览" if slot > datetime.now(BEIJING) else ""}</p></header>
+<header><h1>Global Intelligence Radar</h1><p>{slot:%Y-%m-%d %H:%M} 北京时间 · 真实来源自动简报{edition_status}</p></header>
 <main><p>重要性来自规则评分，可关注的理由为分类提示。机器翻译请对照原文。日期精度仅到日的报道按标示日期归入相应窗口。</p>
 <section class="lead"><h2>今日重点</h2><ol>{''.join(highlights) or '<li>本期暂无高分条目。</li>'}</ol></section>
 {discovery.report_html(findings, slot)}{watch}{blocks}<section><h2>最近7天可能错过的重要新闻</h2><div class="cards">
@@ -375,7 +382,10 @@ def write_report(slot, data, translator, target, statuses, findings=(), watch=""
 def main():
     started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--date", required=True, help="北京时间日期，如 2026-11-21")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--date", help="北京时间日期，如 2026-11-21")
+    mode.add_argument("--due", action="store_true", help="补做最近 48 小时已到期的正式简报")
+    parser.add_argument("--as-of", help="离线回放时间，需配合 --due --reuse 并含 UTC 偏移")
     parser.add_argument("--slot", choices=("08", "20", "both"), default="both")
     parser.add_argument("--models", type=Path)
     parser.add_argument("--state", type=Path, default=ROOT / "local-news.sqlite3")
@@ -383,11 +393,25 @@ def main():
     parser.add_argument("--no-community", action="store_true", help="跳过 Hacker News 查询")
     parser.add_argument("--reuse", action="store_true", help="用已采集数据重新生成")
     args = parser.parse_args()
+    if args.as_of and not (args.due and args.reuse):
+        parser.error("--as-of requires --due --reuse")
+    if args.due and args.slot != "both":
+        parser.error("--slot requires --date")
+    as_of = None
+    if args.as_of:
+        try:
+            as_of = datetime.fromisoformat(args.as_of)
+            if as_of.utcoffset() is None:
+                raise ValueError
+        except ValueError:
+            parser.error("--as-of requires an ISO 8601 datetime with timezone")
+        as_of = as_of.astimezone(BEIJING)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=BEIJING)
+    day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=BEIJING) if args.date else None
+    collected = False
     config = json.loads((ROOT / "config.json").read_text())
     statuses = ["本轮使用本地留存的数据重新生成。"] if args.reuse else []
-    with sqlite3.connect(args.state) as db:
+    with closing(sqlite3.connect(args.state)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS articles(url TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS revisions(url TEXT, noticed_at TEXT, previous TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS health(source TEXT, checked TEXT, ok INTEGER, latest TEXT, error TEXT)")
@@ -399,6 +423,7 @@ def main():
         if not args.reuse:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 results = list(pool.map(lambda source: fetch(source[:3], limit=12), REGISTRY))
+            collected = any(rows for _, rows, _ in results)
             community, github = [], []
             community_ok = False
             if not args.no_community:
@@ -481,6 +506,8 @@ def main():
                 statuses.append(f"{name} · {region}/{language}/{role} · {fields} · "
                                 f"成功 {sample[0]}/{sample[1]} 次 · 最近批次 {latest or error}")
     print(f"热点观察池 {len(findings)} 项，证据达标 {sum(item.get('verified', item['score'] >= 7) for item in findings)} 项")
+    if args.due and not args.reuse and not collected:
+        raise SystemExit("本轮新闻源全部未取得条目；正式简报延至下次成功采集。")
     if not data:
         raise SystemExit("未取得真实数据，保留现有网页。")
     if not statuses:
@@ -488,13 +515,21 @@ def main():
     print(*statuses, sep="\n")
     print(f"本地累计 {len(data)} 个唯一新闻地址")
     translator = Translator(args.models)
-    for hour in (("08", "20") if args.slot == "both" else (args.slot,)):
-        slot = day.replace(hour=int(hour))
-        as_of = {item["name"]: item for item in snapshots if datetime.fromisoformat(item["seen"]) <= slot}
-        ranked_findings = sorted(as_of.values(), key=lambda item: (-item["score"], item["name"]))
-        write_report(slot, data, translator, args.output_dir / f"brief-{args.date}-{hour}.html",
-                     statuses, ranked_findings, watch_html(config, data, slot, translator.translate))
-    current = refresh(args.output_dir, datetime.now(BEIJING))
+    now = as_of or datetime.now(BEIJING)
+
+    def render(slot, target):
+        visible = {item["name"]: item for item in snapshots if datetime.fromisoformat(item["seen"]) <= slot}
+        ranked = sorted(visible.values(), key=lambda item: (-item["score"], item["name"]))
+        write_report(slot, data, translator, target, statuses, ranked,
+                     watch_html(config, data, slot, translator.translate), now if args.due else None)
+
+    if args.due:
+        completed = generate_due(args.state, args.output_dir, now, render)
+        print(f"正式简报新增 {len(completed)} 期。已有时段不重复生成。")
+    else:
+        for hour in (("08", "20") if args.slot == "both" else (args.slot,)):
+            render(day.replace(hour=int(hour)), args.output_dir / f"brief-{args.date}-{hour}.html")
+    current = refresh(args.output_dir, now)
     if current:
         print(f"自动首页采用 {current}")
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss

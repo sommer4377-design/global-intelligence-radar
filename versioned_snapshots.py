@@ -33,28 +33,28 @@ class Snapshot:
             raise ValueError("Invalid snapshot version.")
 
 
-def load(repository, database):
+def load(repository, database, *, unpack=restore):
     """Return the exact revision paired with the database just restored."""
     snapshot = repository.read()
-    restore(snapshot.bundle, database)
+    unpack(snapshot.bundle, database)
     return snapshot
 
 
-def initialize(repository, database):
+def initialize(repository, database, *, packer=pack, max_bundle=MAX_BUNDLE):
     """Create the long-lived file once, with no expected prior version."""
-    return _write(repository, database, None)
+    return _write(repository, database, None, packer, max_bundle)
 
 
-def save(repository, database, base):
+def save(repository, database, base, *, packer=pack, max_bundle=MAX_BUNDLE):
     """Conditionally write against the revision captured at load time."""
     if not isinstance(base, Snapshot):
         raise TypeError("An expected Snapshot is required for an update.")
-    return _write(repository, database, base)
+    return _write(repository, database, base, packer, max_bundle)
 
 
-def _write(repository, database, base):
+def _write(repository, database, base, packer, max_bundle):
     expected = base.version if base is not None else None
-    bundle, info, _ = pack(database)
+    bundle, info, _ = packer(database)
     if base is not None and json.loads(base.bundle)["signature"] == info:
         if repository.read().version != expected:
             raise VersionConflict("Snapshot changed; no update was written.")
@@ -63,7 +63,7 @@ def _write(repository, database, base):
     # Keep each successful update unique even if the database reverts to older bytes.
     content["revision"] = uuid4().hex
     bundle = json.dumps(content, separators=(",", ":")).encode()
-    if len(bundle) > MAX_BUNDLE:
+    if len(bundle) > max_bundle:
         raise ValueError("Versioned snapshot exceeds upload limit.")
     try:
         return repository.replace(bundle, expected)
@@ -123,7 +123,7 @@ class GitHubStateRepository:
             if status is not None and status >= 500:
                 raise SaveUncertain("GitHub did not confirm the write.") from None
             raise
-        except URLError as error:
+        except (URLError, ValueError) as error:
             raise SaveUncertain("GitHub did not confirm the write.") from error
         try:
             return Snapshot(result["content"]["sha"], bundle)

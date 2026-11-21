@@ -1,6 +1,7 @@
 """Two-run state benchmark, restricted to the designated private repository."""
 import argparse
 import base64
+from contextlib import closing
 import gzip
 import io
 import json
@@ -27,33 +28,36 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def api(path, payload=None):
+def api(path, payload=None, *, accept="application/vnd.github+json", response_limit=2 * MAX_BUNDLE):
     token = os.environ.get("RADAR_STATE_TOKEN")
     if not token:
         raise SystemExit("RADAR_STATE_TOKEN is missing.")
     request = Request(HOST + path, data=json.dumps(payload).encode() if payload is not None else None,
                       method="PUT" if payload is not None else "GET",
-                      headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+                      headers={"Authorization": "Bearer " + token, "Accept": accept,
                                "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"})
     try:
         with build_opener(NoRedirect()).open(request, timeout=30) as response:
-            return json.loads(response.read(2 * MAX_BUNDLE))
+            body = response.read(response_limit + 1)
+            if len(body) > response_limit:
+                raise ValueError("GitHub response exceeds the configured limit.")
+            return json.loads(body)
     except HTTPError as error:
         raise SystemExit(f"GitHub request refused: HTTP {error.code}.") from None
 
 
 def counts(path):
-    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("SQLite quick_check failed.")
         return {table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in TABLES}
 
 
-def pack(path):
+def pack(path, *, max_db=MAX_DB, max_bundle=MAX_BUNDLE):
     with TemporaryDirectory() as directory:
         snapshot = Path(directory) / "snapshot.sqlite3"
         info = transfer(path, snapshot, "backup")
-        if info["bytes"] > MAX_DB:
+        if info["bytes"] > max_db:
             raise ValueError("SQLite snapshot exceeds size limit.")
         tables = counts(snapshot)
         if not tables["articles"]:
@@ -61,13 +65,13 @@ def pack(path):
         encoded = base64.b64encode(gzip.compress(snapshot.read_bytes(), mtime=0)).decode("ascii")
         bundle = json.dumps({"version": 1, "signature": info, "tables": tables, "sqlite": encoded},
                             separators=(",", ":")).encode()
-        if len(bundle) > MAX_BUNDLE:
+        if len(bundle) > max_bundle:
             raise ValueError("Compressed snapshot exceeds upload limit.")
         return bundle, info, tables
 
 
-def restore(bundle, target):
-    if len(bundle) > MAX_BUNDLE:
+def restore(bundle, target, *, max_db=MAX_DB, max_bundle=MAX_BUNDLE):
+    if len(bundle) > max_bundle:
         raise ValueError("Bundle exceeds restore limit.")
     data = json.loads(bundle)
     if data["version"] != 1:
@@ -75,8 +79,8 @@ def restore(bundle, target):
     with TemporaryDirectory() as directory:
         snapshot = Path(directory) / "snapshot.sqlite3"
         with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(data["sqlite"], validate=True))) as stream:
-            buffer = stream.read(MAX_DB + 1)
-        if len(buffer) > MAX_DB:
+            buffer = stream.read(max_db + 1)
+        if len(buffer) > max_db:
             raise ValueError("Snapshot exceeds restore limit.")
         snapshot.write_bytes(buffer)
         if signature(snapshot) != data["signature"] or counts(snapshot) != data["tables"]:

@@ -1,0 +1,94 @@
+name: Radar production brief
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Create the first production snapshot or update existing state
+        type: choice
+        required: true
+        options:
+          - update
+          - bootstrap
+      seed_commit:
+        description: Private benchmark commit SHA (bootstrap only)
+        type: string
+        required: false
+      publish:
+        description: Publish to configured GitHub Pages
+        type: boolean
+        default: false
+  # Enable only after approval and a successful manual test.
+  # schedule:
+  #   - cron: '0 0,12 * * *'
+
+permissions:
+  contents: read
+concurrency:
+  group: radar-production-state
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Prepare bounded offline translation
+        run: |
+          if python -m pip install --no-cache-dir -r requirements-offline.txt; then
+            python setup_models.py "$RUNNER_TEMP/models" || echo "Unavailable language models will use source text."
+          else
+            echo "Offline translation unavailable; source text fallback will be used."
+          fi
+      - name: Restore private SQLite state
+        env:
+          RADAR_STATE_TOKEN: ${{ secrets.RADAR_STATE_TOKEN }}
+          OPERATION: ${{ inputs.operation }}
+          SEED_COMMIT: ${{ inputs.seed_commit }}
+        run: |
+          if [ "$OPERATION" = bootstrap ]; then
+            test -n "$SEED_COMMIT"
+            python production_state.py prepare "$RUNNER_TEMP/private-state" --seed-commit "$SEED_COMMIT"
+          else
+            test -z "$SEED_COMMIT"
+            python production_state.py prepare "$RUNNER_TEMP/private-state"
+          fi
+      - name: Generate due editions without state credentials
+        run: |
+          python automatic.py --due --models "$RUNNER_TEMP/models"             --state "$RUNNER_TEMP/private-state/radar.sqlite3" --output-dir "$RUNNER_TEMP/reports"
+      - name: Validate publishable HTML
+        run: python build_public_site.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/public"
+      - name: Save private state using the restored file version
+        env:
+          RADAR_STATE_TOKEN: ${{ secrets.RADAR_STATE_TOKEN }}
+        run: python production_state.py persist "$RUNNER_TEMP/private-state"
+      - name: Upload verified Pages bundle
+        if: vars.RADAR_ZERO_SPEND_CONFIRMED == 'true' && (inputs.publish == true || github.event_name == 'schedule')
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/public
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: vars.RADAR_ZERO_SPEND_CONFIRMED == 'true' && (inputs.publish == true || github.event_name == 'schedule')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish verified site
+        id: deployment
+        uses: actions/deploy-pages@v4
