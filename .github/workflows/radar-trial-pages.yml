@@ -1,0 +1,57 @@
+name: Radar trial Pages
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Publish the trial or restore the previous static snapshot
+        required: true
+        type: choice
+        options: [publish, rollback]
+permissions:
+  contents: read
+concurrency:
+  group: radar-production-state
+  cancel-in-progress: false
+jobs:
+  stage:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.event.repository.private == false && vars.RADAR_ZERO_SPEND_CONFIRMED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage only approved static HTML
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          mkdir _site
+          for path in brief-2026-11-20-08.html brief-2026-11-20-20.html brief-2026-11-21-08.html brief-2026-11-21-20.html; do
+            cp "trial-pages/$path" _site/
+          done
+          case "$MODE" in
+            publish)
+              cp trial-pages/index.html trial-pages/trial-2026-11-22.html _site/
+              ;;
+            rollback)
+              cp trial-pages/rollback-index.html _site/index.html
+              ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+          retention-days: 1
+  deploy:
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
