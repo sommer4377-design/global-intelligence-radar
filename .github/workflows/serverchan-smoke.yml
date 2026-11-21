@@ -1,0 +1,57 @@
+name: Radar WeChat test
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: radar-wechat-smoke
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Send one test notification
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+
+          key = os.environ.get("SERVERCHAN_SENDKEY", "")
+          if not re.fullmatch(r"SCT[A-Za-z0-9_-]+", key):
+              raise SystemExit("Missing or invalid ServerChan Turbo secret.")
+          opener = urllib.request.build_opener(NoRedirect)
+          url = "https://sommer4377-design.github.io/global-intelligence-radar/brief-2026-11-21-20.html"
+          period = "2026-11-21 20:00"
+          try:
+              with opener.open(url, timeout=10) as response:
+                  page = response.read(512_000).decode("utf-8")
+              if period not in page.partition("</header>")[0]:
+                  raise ValueError()
+          except Exception:
+              raise SystemExit("Public evening edition could not be verified. No message sent.") from None
+
+          data = urllib.parse.urlencode({
+              "title": "Radar 中文晚报｜测试通知",
+              "desp": f"北京时间 {period} 中文晚报\n\n[阅读完整简报]({url})",
+          }).encode()
+          try:
+              with opener.open(f"https://sctapi.ftqq.com/{key}.send", data=data, timeout=15) as response:
+                  result = json.load(response)
+          except Exception:
+              raise SystemExit("Provider request failed or delivery is unknown. Check WeChat before trying again.") from None
+          if result.get("code") != 0:
+              raise SystemExit("Provider did not confirm acceptance. Check WeChat and the provider console.")
+          print("Provider accepted one test notification. Confirm delivery and link in WeChat.")
+          PY
