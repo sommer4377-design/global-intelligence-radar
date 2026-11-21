@@ -126,6 +126,15 @@ def main():
         verify_retained(args.before, args.database)
         reject_corruption(args.before)
         return
+    if args.operation == "restore":
+        raw_commit = args.commit or ""
+        commit = raw_commit.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            parser.error(
+                "--commit must contain a complete 40-character lowercase hexadecimal commit SHA "
+                f"(original length={len(raw_commit)}, trimmed length={len(commit)}, "
+                f"outer whitespace={'yes' if raw_commit != commit else 'no'})"
+            )
     details = api("")
     if details.get("full_name", "").lower() != REPO or details.get("private") is not True or details.get("default_branch") != "main":
         raise SystemExit("State repository identity, visibility or branch check failed.")
@@ -136,9 +145,7 @@ def main():
                             "content": base64.b64encode(bundle).decode("ascii")})
         print("State commit:", result["commit"]["sha"])
     else:
-        if not args.commit or not re.fullmatch(r"[0-9a-f]{40}", args.commit):
-            parser.error("--commit must contain a complete 40-character commit SHA")
-        result = api(FILE + "?ref=" + args.commit)
+        result = api(FILE + "?ref=" + commit)
         info, tables = restore(base64.b64decode(result["content"]), args.database)
     print("SQLite SHA-256:", info["sha256"], "table counts:", json.dumps(tables, sort_keys=True))
 
