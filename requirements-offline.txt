@@ -1,0 +1,2 @@
+ctranslate2==4.9.0
+sentencepiece==0.2.3

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.sqlite*
+*.manifest.json
+.env*
+.venv/
+.models/
+models/
+*.argosmodel
+*.pem
+*.key
+*.html
+.DS_Store

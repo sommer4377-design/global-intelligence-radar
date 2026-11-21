@@ -1,0 +1,51 @@
+{
+  "Meta Connect": {
+    "url": "https://www.meta.com/connect/"
+  },
+  "Google I/O": {
+    "url": "https://io.google/"
+  },
+  "Apple WWDC": {
+    "url": "https://developer.apple.com/wwdc/"
+  },
+  "OpenAI DevDay": {
+    "url": "https://openai.com/devday/"
+  },
+  "NVIDIA GTC": {
+    "url": "https://www.nvidia.com/gtc/faq/",
+    "start": "2027-03-14",
+    "end": "2027-03-18",
+    "zone": "America/Los_Angeles",
+    "theme": "AI 与加速计算",
+    "note": "FAQ 公布的大会日期；主页横幅列 3 月 15–18 日，具体分会及主题演讲以议程为准。"
+  },
+  "CES": {
+    "url": "https://www.ces.tech/about-ces/about-ces/",
+    "start": "2027-01-06",
+    "end": "2027-01-09",
+    "zone": "America/Los_Angeles",
+    "theme": "多产业消费技术展，含 AI、机器人、汽车与云计算"
+  },
+  "MWC": {
+    "url": "https://www.mwcbarcelona.com/about/",
+    "start": "2027-03-01",
+    "end": "2027-03-04",
+    "zone": "Europe/Madrid",
+    "theme": "移动连接、云、AI 与数据基础设施"
+  },
+  "NVIDIA GTC Washington, D.C.": {
+    "url": "https://www.nvidia.com/gtc/dc/faq/",
+    "start": "2026-11-30",
+    "end": "2026-12-03",
+    "zone": "America/New_York",
+    "theme": "AI、加速计算及公共部门应用"
+  },
+  "Apple WWDC26": {
+    "url": "https://www.apple.com/newsroom/2026/05/apple-kicks-off-worldwide-developers-conference-on-june-8/",
+    "start": "2026-06-08",
+    "end": "2026-06-12",
+    "zone": "America/Los_Angeles",
+    "theme": "Apple 平台、AI 和开发工具",
+    "official_recap": "https://www.apple.com/newsroom/2026/06/apple-unveils-next-generation-of-apple-intelligence-siri-ai-and-more/"
+  }
+}

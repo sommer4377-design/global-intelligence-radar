@@ -1,0 +1,80 @@
+{
+  "people": {
+    "Mark Zuckerberg": [
+      "Mark Zuckerberg",
+      "扎克伯格"
+    ],
+    "Sam Altman": [
+      "Sam Altman",
+      "奥尔特曼"
+    ],
+    "Elon Musk": [
+      "Elon Musk",
+      "马斯克"
+    ],
+    "Jensen Huang": [
+      "Jensen Huang",
+      "黄仁勋"
+    ],
+    "Sundar Pichai": [
+      "Sundar Pichai",
+      "皮查伊"
+    ]
+  },
+  "events": [
+    "Meta Connect",
+    "Google I/O",
+    "Apple WWDC",
+    "OpenAI DevDay",
+    "NVIDIA GTC",
+    "CES",
+    "MWC"
+  ],
+  "feeds": {
+    "Agência Brasil": "https://agenciabrasil.ebc.com.br/rss/geral/feed.xml"
+  },
+  "strategic_companies": {
+    "NVIDIA": [
+      "NVIDIA",
+      "英伟达"
+    ],
+    "OpenAI": [
+      "OpenAI"
+    ],
+    "TSMC": [
+      "TSMC",
+      "台积电"
+    ],
+    "ASML": [
+      "ASML",
+      "阿斯麦"
+    ],
+    "BYD": [
+      "BYD",
+      "比亚迪"
+    ],
+    "Tesla": [
+      "Tesla",
+      "特斯拉"
+    ],
+    "Tencent": [
+      "Tencent",
+      "腾讯"
+    ],
+    "Alibaba": [
+      "Alibaba",
+      "阿里巴巴"
+    ],
+    "Anthropic": [
+      "Anthropic"
+    ],
+    "DeepSeek": [
+      "DeepSeek",
+      "深度求索"
+    ],
+    "Xiaomi": [
+      "Xiaomi",
+      "小米"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "edition":2025,
+  "financial_year":2024,
+  "source":"https://publications.jrc.ec.europa.eu/repository/handle/JRC144638",
+  "amount_transcription":"https://www.ithome.com/0/910/209.htm",
+  "note":"欧盟 JRC 2025 版，财年 2024。排名按报告图 10 核对；金额采用 IT之家转录的舍入值，官方 XLSX 当前访问返回 403。Amazon 为 JRC 估算。",
+  "companies":[
+    {"rank":1,"name":"Amazon","aliases":["Amazon","AWS","亚马逊"],"eur_million":65318},
+    {"rank":2,"name":"Alphabet","aliases":["Alphabet","Google","谷歌"],"eur_million":46131},
+    {"rank":3,"name":"Meta","aliases":["Meta","Facebook"],"eur_million":41986},
+    {"rank":4,"name":"Microsoft","aliases":["Microsoft","微软"],"eur_million":31272},
+    {"rank":5,"name":"Apple","aliases":["Apple","苹果"],"eur_million":30195},
+    {"rank":6,"name":"Huawei","aliases":["Huawei","华为"],"eur_million":22941},
+    {"rank":7,"name":"Samsung Electronics","aliases":["Samsung","三星"],"eur_million":22843},
+    {"rank":8,"name":"Volkswagen","aliases":["Volkswagen","大众汽车"],"eur_million":20998},
+    {"rank":9,"name":"Johnson & Johnson","aliases":["Johnson & Johnson","强生"],"eur_million":16587},
+    {"rank":10,"name":"Intel","aliases":["Intel","英特尔"],"eur_million":15926}
+  ]
+}
