@@ -17,6 +17,8 @@ EXTRA = (
     ("Electrek", "全球科技商业", "https://electrek.co/feed/", "北美、全球", "en", "媒体", "电动汽车、储能、供应链"),
     ("NVIDIA Blog", "全球科技商业", "https://blogs.nvidia.com/feed/", "美国、全球", "en", "官方", "AI芯片、机器人、算力"),
     ("AWS News Blog", "全球科技商业", "https://aws.amazon.com/blogs/aws/feed/", "美国、全球", "en", "官方", "云计算、AI基础设施"),
+    ("Samsung Global Newsroom", "全球科技商业", "https://news.samsung.com/global/feed", "韩国、全球", "en", "官方", "消费电子、芯片、全球发布"),
+    ("UN OCHA", "全球重大事件", "https://www.unocha.org/rss.xml", "全球", "en", "机构", "人道应急和冲突通报"),
     ("USGS", "全球重大事件", "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_week.atom", "全球", "en", "官方", "地震"),
 )
 BASE = (
