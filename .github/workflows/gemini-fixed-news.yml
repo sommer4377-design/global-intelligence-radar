@@ -162,7 +162,7 @@ jobs:
           from urllib.request import Request
 
           BASE = "https://generativelanguage.googleapis.com/v1beta/"
-          FREE_FLASH = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
+          FREE_FLASH = ("gemini-3.8-flash",)
           MAX_OUTPUT = 1200
 
 
@@ -201,6 +201,8 @@ jobs:
 
 
           def benchmark(items, target, probe_only=False):
+              if not probe_only:
+                  raise SystemExit("三篇写作已暂停，等待 3.8 Flash 免费生成探测验收。")
               key = os.getenv("GEMINI_API_KEY", "").strip()
               if not key:
                   raise SystemExit("缺少 GEMINI_API_KEY；未调用。")
@@ -220,6 +222,23 @@ jobs:
                       print(f"HTTP 200 | models.get | {name} | generateContent={supported}")
                       if not supported:
                           raise SystemExit("目录模型不支持所需方法。")
+                      report.pop("http", None)
+                      report.update(stage="generateContent.smoke", requests=1)
+                      data = call(key, name + ":generateContent", {
+                          "contents": [{"parts": [{"text": "Reply with exactly OK."}]}],
+                          "generationConfig": {"maxOutputTokens": 32, "candidateCount": 1,
+                                               "thinkingConfig": {"thinkingLevel": "MINIMAL"}},
+                      })
+                      candidate = (data.get("candidates") or [{}])[0]
+                      generated = any(part.get("text", "").strip() and not part.get("thought")
+                                      for part in candidate.get("content", {}).get("parts", []))
+                      usage = data.get("usageMetadata", {})
+                      report.update(http=200, generated=generated,
+                                    usage={k: v for k, v in usage.items() if k.endswith("TokenCount") and type(v) is int},
+                                    status="SMOKE_OK" if generated else "SMOKE_NO_TEXT")
+                      print(f"HTTP 200 | generateContent.smoke | generated={generated}")
+                      if not generated:
+                          raise SystemExit("生成端点未返回可见正文。")
                       return
                   report["stage"] = "models.list"
                   catalog = call(key, "models?pageSize=1000")
@@ -250,7 +269,7 @@ jobs:
                               "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                               "generationConfig": {"candidateCount": 1, "temperature": 0.15,
                                                    "maxOutputTokens": MAX_OUTPUT,
-                                                   "thinkingConfig": {"thinkingBudget": 0},
+                                                   "thinkingConfig": {"thinkingLevel": "MINIMAL"},
                                                    "responseMimeType": "application/json"},
                           })
                           candidates = data.get("candidates") or [{}]
