@@ -1,0 +1,100 @@
+name: Groq Ubuntu connectivity probe
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: radar-groq-connectivity-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.repository == 'sommer4377-design/global-intelligence-radar' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Probe Groq model directory once
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, re, ssl, sys
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+
+          MODELS = ("openai/gpt-oss-120b", "qwen/qwen3.8-27b")
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+
+          def make_opener():
+              context = ssl.create_default_context()
+              if sys.platform == "darwin" and not context.get_ca_certs():
+                  mac_roots = Path("/etc/ssl/cert.pem")
+                  if mac_roots.is_file():
+                      context.load_verify_locations(cafile=str(mac_roots))
+              return build_opener(NoRedirect(), HTTPSHandler(context=context))
+
+
+          def describe_forbidden(error, key):
+              def clean(value):
+                  if not isinstance(value, str):
+                      return "未提供"
+                  value = value.replace(key, "[已脱敏]")
+                  value = re.sub(r"(?i)\b(?:bearer\s+[^\s,;]+|gsk_[\w-]+)", "[已脱敏]", value)
+                  value = re.sub(r"(?i)https?://[^\s<>]+", "[链接已省略]", value)
+                  value = re.sub(r"[^\x20-\x7e\u00a0-\uffff]", " ", value)
+                  return value[:400] or "未提供"
+
+              raw = error.read(16_384)
+              details = {}
+              try:
+                  body = json.loads(raw)
+                  if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                      details = body["error"]
+              except (ValueError, UnicodeError):
+                  pass
+              edge = ("cloudflare" in error.headers.get("Server", "").lower()
+                      or bool(error.headers.get("CF-Ray")))
+              if error.headers.get("CF-Mitigated", "").lower() == "challenge" or b"/cdn-cgi/challenge-platform" in raw:
+                  origin = "Cloudflare 挑战响应"
+              elif details.get("type") in ("permissions_error", "invalid_request_error") or str(
+                  details.get("code", "")
+              ).startswith("model_permission_blocked_"):
+                  origin = "Groq API 结构化错误" + ("（经 Cloudflare 转发）" if edge else "")
+              elif edge:
+                  origin = "经过 Cloudflare；无法区分边缘拦截和 Groq 源站拒绝"
+              else:
+                  origin = "没有足够标记判断拒绝来源"
+              return (f"HTTP 403 | 类型={clean(details.get('type'))} | "
+                      f"代码={clean(details.get('code'))} | 来源={origin}")
+
+
+          def probe(key):
+              request = Request("https://api.groq.com/openai/v1/models",
+                                headers={"Authorization": "Bearer " + key})
+              try:
+                  with make_opener().open(request, timeout=15) as response:
+                      models = {item["id"] for item in json.load(response)["data"]}
+              except HTTPError as error:
+                  if error.code == 403:
+                      raise SystemExit(describe_forbidden(error, key)) from None
+                  raise SystemExit(f"模型目录返回 HTTP {error.code}；未发送写作请求。") from None
+              except (URLError, TimeoutError, ValueError) as error:
+                  reason = getattr(error, "reason", error)
+                  raise SystemExit(f"模型目录检查失败（{type(reason).__name__}）；未发送写作请求。") from None
+              missing = set(MODELS) - models
+              if missing:
+                  raise SystemExit("HTTP 200 | 账号模型目录缺少 " + ", ".join(sorted(missing)) + "；未发送写作请求。")
+              print("HTTP 200 | 两个目标模型均可见。")
+
+
+
+          key = os.getenv("GROQ_API_KEY", "").strip()
+          if not key:
+              raise SystemExit("缺少 GROQ_API_KEY Secret；未发送请求。")
+          probe(key)
+          PYCODE
