@@ -226,8 +226,7 @@ jobs:
                       report.update(stage="generateContent.smoke", requests=1)
                       data = call(key, name + ":generateContent", {
                           "contents": [{"parts": [{"text": "Reply with exactly OK."}]}],
-                          "generationConfig": {"maxOutputTokens": 32, "candidateCount": 1,
-                                               "thinkingConfig": {"thinkingLevel": "MINIMAL"}},
+                          "generationConfig": {"maxOutputTokens": 256, "candidateCount": 1},
                       })
                       candidate = (data.get("candidates") or [{}])[0]
                       generated = any(part.get("text", "").strip() and not part.get("thought")
@@ -269,7 +268,6 @@ jobs:
                               "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                               "generationConfig": {"candidateCount": 1, "temperature": 0.15,
                                                    "maxOutputTokens": MAX_OUTPUT,
-                                                   "thinkingConfig": {"thinkingLevel": "MINIMAL"},
                                                    "responseMimeType": "application/json"},
                           })
                           candidates = data.get("candidates") or [{}]
