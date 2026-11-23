@@ -2,6 +2,11 @@ name: Gemini fixed-news quality test
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Probe model metadata or run the fixed writing test
+        type: choice
+        options: [probe, writing]
+        default: probe
       free_project_confirmed:
         description: I verified this API key belongs to an unbilled Gemini Free project
         type: boolean
@@ -18,8 +23,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 7
     steps:
-      - name: Run the three fixed cases
+      - name: Probe Gemini or run fixed cases
         env:
+          GEMINI_RUN_MODE: ${{ inputs.mode }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: bash
         run: |
@@ -170,7 +176,31 @@ jobs:
                   return json.load(response)
 
 
-          def benchmark(items, target):
+          def safe_google_error(error, key):
+              def safe(value):
+                  if not isinstance(value, str):
+                      return None
+                  value = value.replace(key, "[REDACTED]")
+                  value = re.sub(r"(?i)(?:AIza[\w-]{20,}|bearer\s+[^\s,;]+)", "[REDACTED]", value)
+                  value = re.sub(r"https?://[^\s]+", "[URL]", value)
+                  return " ".join(value.split())[:350]
+
+              try:
+                  details = json.loads(error.read(16384)).get("error", {})
+                  if not isinstance(details, dict):
+                      return {}
+              except (ValueError, AttributeError, OSError):
+                  return {}
+              return {
+                  "google_code": details.get("code") if type(details.get("code")) is int else None,
+                  "google_status": safe(details.get("status")),
+                  "google_message": safe(details.get("message")),
+                  "google_reasons": [reason for row in (details.get("details") or [])
+                                     if isinstance(row, dict) and (reason := safe(row.get("reason")))],
+              }
+
+
+          def benchmark(items, target, probe_only=False):
               key = os.getenv("GEMINI_API_KEY", "").strip()
               if not key:
                   raise SystemExit("缺少 GEMINI_API_KEY；未调用。")
@@ -179,6 +209,19 @@ jobs:
                   target.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
               try:
+                  if probe_only:
+                      report["stage"] = "models.get"
+                      name = f"models/{FREE_FLASH[0]}"
+                      metadata = call(key, name)
+                      supported = (metadata.get("name") == name
+                                   and "generateContent" in metadata.get("supportedGenerationMethods", []))
+                      report.update(http=200, model=name, generate_content_supported=supported,
+                                    status="MODEL_METADATA_OK" if supported else "MODEL_CAPABILITY_MISSING")
+                      print(f"HTTP 200 | models.get | {name} | generateContent={supported}")
+                      if not supported:
+                          raise SystemExit("目录模型不支持所需方法。")
+                      return
+                  report["stage"] = "models.list"
                   catalog = call(key, "models?pageSize=1000")
                   visible = {row["name"] for row in catalog["models"]
                              if "generateContent" in row.get("supportedGenerationMethods", [])}
@@ -201,6 +244,7 @@ jobs:
                           if report["requests"]:
                               time.sleep(15)
                           report["requests"] += 1
+                          report["stage"] = "generateContent"
                           data = call(key, model + ":generateContent", {
                               "systemInstruction": {"parts": [{"text": INSTRUCTION}]},
                               "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -227,7 +271,9 @@ jobs:
                               break
                   report["status"] = "COMPLETED_REQUIRES_EDITORIAL_REVIEW"
               except HTTPError as error:
-                  report.update(status="HTTP_ERROR", http=error.code)
+                  report.update(status="HTTP_ERROR", http=error.code, **safe_google_error(error, key))
+                  print(json.dumps({k: v for k, v in report.items() if k not in ("articles", "model")},
+                                   ensure_ascii=False))
                   raise SystemExit(f"Gemini HTTP {error.code}；停止本轮调用。") from None
               except (URLError, TimeoutError, ValueError, KeyError, TypeError) as error:
                   report.update(status="API_OR_RESPONSE_ERROR", error_type=type(error).__name__)
@@ -238,7 +284,8 @@ jobs:
           ITEMS = [{'title': 'NVIDIA RTX Spark Compact Desktops Out Now', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'facts': {'subject_anchor': 'NVIDIA RTX Spark Compact Desktops Out Now', 'publisher': 'NVIDIA Blog', 'tier': 'A', 'facts': {'A1': {'statement': 'New NVIDIA RTX Spark compact desktops from ASUS, Dell and MSI are available today, bringing local AI agents, image and video generation, and model fine-tuning to a dedicated Windows PC.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '仅支持发布方描述的范围', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['AI', 'ASUS', 'Dell', 'MSI', 'NVIDIA', 'New', 'PC', 'RTX', 'Spark', 'Windows'], 'numbers': [], 'action_types': [], 'states': []}, 'A2': {'statement': 'New compact desktops are available for purchase from ASUS, Dell and MSI, joining the RTX Spark family of laptops available today.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '仅支持发布方描述的范围', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['ASUS', 'Dell', 'MSI', 'New', 'RTX', 'Spark'], 'numbers': [], 'action_types': [], 'states': ['上市销售']}, 'A3': {'statement': 'NVIDIA Switchyard, now available in Hermes, automatically routes agent tasks between local and cloud models.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '仅支持发布方描述的范围', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['Hermes', 'NVIDIA', 'Switchyard'], 'numbers': [], 'action_types': [], 'states': []}, 'A4': {'statement': 'Alongside the new desktops, an expanding software ecosystem brings more creative and development workflows to RTX Spark laptops and compact desktops.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['Alongside', 'RTX', 'Spark'], 'numbers': [], 'action_types': [], 'states': []}, 'A5': {'statement': 'Native Windows on Arm applications from Adobe, the NVIDIA DLSS Ray Reconstruction feature in Blender and local generation workflows in ComfyUI expand what creators and developers can do on RTX Spark — all on one Windows PC.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['Adobe', 'Arm', 'Blender', 'DLSS', 'NVIDIA', 'Native Windows', 'PC', 'RTX', 'Ray Reconstruction', 'Spark', 'Windows'], 'numbers': [], 'action_types': ['publication'], 'states': []}, 'A6': {'statement': 'RTX Spark compact desktops give developers, creators and AI enthusiasts a dedicated Windows PC for local models and always-on agents.', 'source': 'NVIDIA Blog', 'url': 'https://blogs.nvidia.com/blog/rtx-spark-desktop-local-ai-available-now/', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-18 22:00 北京时间', 'entities': ['AI', 'PC', 'RTX', 'Spark', 'Windows'], 'numbers': [], 'action_types': [], 'states': []}}, 'core': ['A1'], 'background_candidates': ['A4', 'A5', 'A6'], 'event_time_and_location': '以逐项断言为准，未把发布日期当作发生日期', 'independent_impact': '未单独核实', 'unconfirmed': ['证据之外的影响或因果', '没有明确来源的背景及时间地点']}}, {'title': 'Samsung Begins One UI 9.5 Beta Program', 'url': 'https://news.samsung.com/global/samsung-begins-one-ui-9-5-beta-program', 'facts': {'subject_anchor': 'Samsung Begins One UI 9.5 Beta Program', 'publisher': 'Samsung Global Newsroom', 'tier': 'A', 'facts': {'A1': {'statement': 'Samsung has launched the One UI 9.5 beta program, giving users an early look at One UI 9.5 ahead of its official debut.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-begins-one-ui-9-5-beta-program', 'verification': '仅支持发布方描述的范围', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-19 02:00 北京时间', 'entities': ['One', 'Samsung', 'UI'], 'numbers': ['9.5'], 'action_types': ['publication'], 'states': ['测试']}, 'A2': {'statement': 'The One UI 9.5 beta program is open today to Galaxy S26 series users in select markets, including Germany, India, Korea, Poland, the UK, and the U.S.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-begins-one-ui-9-5-beta-program', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-19 02:00 北京时间', 'entities': ['Galaxy', 'Germany', 'India', 'Korea', 'Poland', 'The One', 'UI', 'UK'], 'numbers': ['9.5'], 'action_types': [], 'states': ['测试']}, 'A3': {'statement': 'Eligible users can apply to join the beta program through the Samsung Members app.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-begins-one-ui-9-5-beta-program', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-19 02:00 北京时间', 'entities': ['Eligible', 'Samsung Members'], 'numbers': [], 'action_types': [], 'states': ['开放申请', '测试']}, 'A4': {'statement': 'When an app is locked, its notification content and widgets remain hidden, helping protect personal information even when others have access to the device.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-begins-one-ui-9-5-beta-program', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-19 02:00 北京时间', 'entities': ['When'], 'numbers': [], 'action_types': [], 'states': []}}, 'core': ['A1'], 'background_candidates': ['A2', 'A3', 'A4'], 'event_time_and_location': '以逐项断言为准，未把发布日期当作发生日期', 'independent_impact': '未单独核实', 'unconfirmed': ['证据之外的影响或因果', '没有明确来源的背景及时间地点']}}, {'title': 'Samsung Electronics Announces New Leadership', 'url': 'https://news.samsung.com/global/samsung-electronics-announces-new-leadership-5', 'facts': {'subject_anchor': 'Samsung Electronics Announces New Leadership', 'publisher': 'Samsung Global Newsroom', 'tier': 'A', 'facts': {'A1': {'statement': 'Samsung Electronics today announced new leadership for the next phase of the Company’s growth and to strengthen its future competitiveness on the semiconductor business.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-electronics-announces-new-leadership-5', 'verification': '仅支持发布方描述的范围', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-20 17:01 北京时间', 'entities': ['Company', 'Samsung Electronics'], 'numbers': [], 'action_types': [], 'states': ['宣布']}, 'A2': {'statement': 'Sang Joon Hwang was promoted to President and will become the Head of Memory Business, while Sangyeun Cho was also promoted to President and will lead the System LSI Business.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-electronics-announces-new-leadership-5', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-20 17:01 北京时间', 'entities': ['Business', 'Head', 'LSI', 'Memory Business', 'President', 'Sang Joon Hwang', 'Sangyeun Cho', 'System'], 'numbers': [], 'action_types': [], 'states': []}, 'A3': {'statement': 'Jong Myeong Lee was promoted to President and will become the Chief Technology Officer of the Device Solutions (DS) Division.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-electronics-announces-new-leadership-5', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-20 17:01 北京时间', 'entities': ['Chief Technology Officer', 'DS', 'Device Solutions', 'Division', 'Jong Myeong Lee', 'President'], 'numbers': [], 'action_types': [], 'states': []}, 'A4': {'statement': 'Separately, President Won-Joon Choi was named Head of Mobile eXperience (MX) Business, after serving as the COO of the MX Business since March, 2025, and leading the successful launches of Galaxy S26 and Galaxy Z Fold8 series.', 'source': 'Samsung Global Newsroom', 'url': 'https://news.samsung.com/global/samsung-electronics-announces-new-leadership-5', 'verification': '官方材料背景', 'conflict': '未做独立交叉核实', 'evidence_type': '官方原始公告', 'source_time': '2026-11-20 17:01 北京时间', 'entities': ['Business', 'COO', 'Galaxy', 'Head', 'MX', 'March', 'Mobile', 'President Won-Joon Choi', 'Separately'], 'numbers': ['2025'], 'action_types': ['publication'], 'states': []}}, 'core': ['A1'], 'background_candidates': ['A2', 'A3', 'A4'], 'event_time_and_location': '以逐项断言为准，未把发布日期当作发生日期', 'independent_impact': '未单独核实', 'unconfirmed': ['证据之外的影响或因果', '没有明确来源的背景及时间地点']}}]
 
           if __name__ == "__main__":
-              benchmark(ITEMS, Path("gemini-results.json"))
+              benchmark(ITEMS, Path("gemini-results.json"),
+                        probe_only=os.getenv("GEMINI_RUN_MODE") != "writing")
           PYCODE
       - name: Save reviewed input and unreviewed drafts
         if: always()
