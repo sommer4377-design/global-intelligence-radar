@@ -157,6 +157,8 @@ jobs:
               return rows, problems
           """Gemini fixed-case experiment; bundled by build_workflow.py for Ubuntu."""
           import os
+          from http.client import HTTPException
+          import socket
           import time
           from urllib.error import HTTPError, URLError
           from urllib.request import Request
@@ -164,6 +166,42 @@ jobs:
           BASE = "https://generativelanguage.googleapis.com/v1beta/"
           FREE_FLASH = ("gemini-3.8-flash",)
           MAX_OUTPUT = 1200
+
+
+          class ResponseStructureError(ValueError):
+              pass
+
+
+          def describe_failure(error):
+              reason = error.reason if isinstance(error, URLError) else error
+              if isinstance(reason, TimeoutError):
+                  kind, message = "TIMEOUT", "连接或读取响应超时"
+              elif isinstance(reason, ssl.SSLCertVerificationError):
+                  kind, message = "TLS_ERROR", "TLS 证书校验失败"
+              elif isinstance(reason, ssl.SSLError):
+                  kind, message = "TLS_ERROR", "TLS 握手或传输失败"
+              elif isinstance(reason, socket.gaierror):
+                  kind, message = "NETWORK_ERROR", "DNS 解析失败"
+              elif isinstance(reason, (json.JSONDecodeError, UnicodeError)):
+                  kind, message = "JSON_ERROR", "响应无法解码为 JSON"
+              elif isinstance(reason, (ResponseStructureError, KeyError, TypeError, AttributeError, IndexError)):
+                  kind, message = "RESPONSE_STRUCTURE_ERROR", "响应 JSON 的结构或字段类型不符合预期"
+              else:
+                  kind, message = "NETWORK_ERROR", "网络连接或 HTTP 响应读取失败"
+              # Use fixed messages instead of raw exception text, which can include request data.
+              return {"status": kind, "error_type": type(reason).__name__, "error_message": message}
+
+
+          def object_field(value):
+              if not isinstance(value, dict):
+                  raise ResponseStructureError()
+              return value
+
+
+          def array_field(value):
+              if not isinstance(value, list):
+                  raise ResponseStructureError()
+              return value
 
 
           def call(key, route, payload=None):
@@ -214,9 +252,9 @@ jobs:
                   if probe_only:
                       report["stage"] = "models.get"
                       name = f"models/{FREE_FLASH[0]}"
-                      metadata = call(key, name)
+                      metadata = object_field(call(key, name))
                       supported = (metadata.get("name") == name
-                                   and "generateContent" in metadata.get("supportedGenerationMethods", []))
+                                   and "generateContent" in array_field(metadata.get("supportedGenerationMethods", [])))
                       report.update(http=200, model=name, generate_content_supported=supported,
                                     status="MODEL_METADATA_OK" if supported else "MODEL_CAPABILITY_MISSING")
                       print(f"HTTP 200 | models.get | {name} | generateContent={supported}")
@@ -228,10 +266,15 @@ jobs:
                           "contents": [{"parts": [{"text": "Reply with exactly OK."}]}],
                           "generationConfig": {"maxOutputTokens": 256, "candidateCount": 1},
                       })
-                      candidate = (data.get("candidates") or [{}])[0]
-                      generated = any(part.get("text", "").strip() and not part.get("thought")
-                                      for part in candidate.get("content", {}).get("parts", []))
-                      usage = data.get("usageMetadata", {})
+                      data = object_field(data)
+                      candidates = array_field(data.get("candidates", []))
+                      candidate = object_field(candidates[0]) if candidates else {}
+                      content = object_field(candidate.get("content", {}))
+                      parts = [object_field(part) for part in array_field(content.get("parts", []))]
+                      if any("text" in part and not isinstance(part["text"], str) for part in parts):
+                          raise ResponseStructureError()
+                      generated = any(part.get("text", "").strip() and not part.get("thought") for part in parts)
+                      usage = object_field(data.get("usageMetadata", {}))
                       report.update(http=200, generated=generated,
                                     usage={k: v for k, v in usage.items() if k.endswith("TokenCount") and type(v) is int},
                                     status="SMOKE_OK" if generated else "SMOKE_NO_TEXT")
@@ -292,9 +335,12 @@ jobs:
                   print(json.dumps({k: v for k, v in report.items() if k not in ("articles", "model")},
                                    ensure_ascii=False))
                   raise SystemExit(f"Gemini HTTP {error.code}；停止本轮调用。") from None
-              except (URLError, TimeoutError, ValueError, KeyError, TypeError) as error:
-                  report.update(status="API_OR_RESPONSE_ERROR", error_type=type(error).__name__)
-                  raise SystemExit("Gemini 请求或响应读取失败；停止本轮调用。") from None
+              except (OSError, HTTPException, json.JSONDecodeError, UnicodeError, ResponseStructureError,
+                      KeyError, TypeError, AttributeError, IndexError) as error:
+                  report.update(describe_failure(error))
+                  print(json.dumps({k: report[k] for k in ("stage", "status", "error_type", "error_message")},
+                                   ensure_ascii=False))
+                  raise SystemExit("Gemini 探测失败，已保存脱敏诊断。") from None
               finally:
                   save()
 
